@@ -23,6 +23,8 @@ parser.add_argument('-m', '--mpp', nargs=2, type=float,
 parser.add_argument('-i', '--iter', type=int,
                     default=100, help='# of iterations')
 parser.add_argument('-l', '--fn_slide_label', type=str, help='name of csv file where [slide id] - [slide level annotation] pair is listed.')
+parser.add_argument('-L', '--len_tile_pxl', type=int, help='side length of tile')
+
 
 '''
 data_arg = add_argument_group('Data')
