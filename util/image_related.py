@@ -8,17 +8,41 @@ from PIL import Image
 from os.path import join, splitext
 from skimage.transform.integral import integrate, integral_image
 #from slide_related import make_tile_mask_edge_threshold, check_if_tumor_slide_2, get_scale
-from .system_related import get_exact_file_name_from_path, flatten
+from .system_related import get_exact_file_name_from_path, flatten, round_i
 from .color_related import  otsu_thresholding, get_hem_eos_from_rgb
+import random
+from PIL import Image, ImageColor
 
+
+def generate_random_image(w_h, monochrome=False):
+    """
+    Generate a random image by size, optionally in monochrome
+    """
+    img_data = []
+    pixel_color = ""
+    monochrome_colors = ("white", "black", )
+    #for pixel in img.getdata():
+    w, h = w_h
+    total_pixels = w * h
+    for x in range(0, total_pixels):
+        if monochrome:
+            pixel_color = random.choice(monochrome_colors)
+            img_data.append(ImageColor.getrgb(pixel_color))
+        else:
+            # randomize indices between 0 & 255
+            img_data.append((random.randint(0, 255), random.randint(0, 255), random.randint(0, 255),))
+
+    randomized_image = Image.new("RGB", size=(w, h))
+    randomized_image.putdata(img_data)
+    return randomized_image
 
 
 
 def get_sum_of_rectangle(im_int, x, y, w, h):
-    x_f = int(round(x))
-    y_f = int(round(y))
-    x_t = int(round(x + w)) - 1
-    y_t = int(round(y + h)) - 1
+    x_f = round_i(x)
+    y_f = round_i(y)
+    x_t = round_i(x + w) - 1
+    y_t = round_i(y + h) - 1
     area =  integrate(im_int, y_f, x_f, y_t, x_t)
     if isinstance(area, (collections.Sequence, np.ndarray)):
         return area[0]

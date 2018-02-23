@@ -17,7 +17,8 @@ import collections
 
 
 
-
+def round_i(x):
+    return int(round(x))
 
 def flatten(x):
     if isinstance(x, collections.Iterable):
@@ -96,7 +97,7 @@ def probe_model(model, batch_factor_per_gpu_given):
             sys.exit(1)
     else:
         if batch_factor_per_gpu_given:
-            batch_per_gpu = int(round(batch_factor_per_gpu_given * batch_per_gpu_model))
+            batch_per_gpu = round_i(batch_factor_per_gpu_given * batch_per_gpu_model)
         else:
             batch_per_gpu = batch_per_gpu_model
     return batch_per_gpu, batch_per_gpu_model

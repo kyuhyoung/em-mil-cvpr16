@@ -12,6 +12,7 @@ from time import time
 from PIL import Image
 from .image_related import is_this_patch_below_threshold, get_opencv_contours_from_xml, \
     get_image_size_from_list_of_contour, get_sum_of_rectangle
+from .system_related import round_i
 from xml.etree.ElementTree import parse
 
 
@@ -167,6 +168,41 @@ def is_this_signpen(im_int_edge_l, level, th_edge_pxl_0, x_from_0, y_from_0, wid
 def is_this_tissue(im_integral_edge_l, level, th_edge_pxl_0, x_from_0, y_from_0, wid_0, hei_0):
     return (not is_this_signpen(im_integral_edge_l, level, th_edge_pxl_0, x_from_0, y_from_0, wid_0, hei_0))
 
+def is_this_patch_tissue(im_rgb, tissue_detection, im_edge_integral = None, integral_level = None):
+    is_tissue = False
+    if 'non-white' == tissue_detection:
+        #is_tissue = im_rgb.mean() <= 240
+        is_tissue = im_rgb.mean() <= 230
+    elif 'near-magenta' == tissue_detection:
+        # colors close to Magenta.
+        # reference https://engineering.purdue.edu/~abe305/HTMLS/rgbspace.htm
+        mean_red = im_rgb[..., 0].mean()
+        mean_green = im_rgb[..., 1].mean()
+        mean_blue = im_rgb[..., 2].mean()
+        condition_red = mean_red > 180
+        condition_green = mean_green < 230
+        condition_blue = mean_blue > 180
+        is_tissue = condition_red and condition_green and condition_blue
+        '''
+        #   degug mode
+        print(condition_red, condition_green, condition_blue)
+        im_bgr = cv2.cvtColor(im_rgb, cv2.COLOR_BGR2RGB)
+        txt_t = "%s %s %s"%(round_i(mean_red), round_i(mean_green), round_i(mean_blue))
+        p_txt = (int(10), int(30))
+        face_font = cv2.FONT_HERSHEY_SIMPLEX
+        scale_font = 1
+        color_font = (255, 255, 255)
+        thick_font = round_i(scale_font * 1.5)
+        cv2.putText(im_bgr, txt_t, p_txt, face_font, scale_font, color_font, thick_font)
+        cv2.imwrite('im_bgr.jpg', im_bgr)
+        if is_tissue:
+            dummy = 0
+        '''
+    elif 'edge' == tissue_detection:
+        dummy = 0
+    return is_tissue
+
+
 
 def get_slide_size(fn_slide, level):
     slide = get_slide(fn_slide)
@@ -178,7 +214,7 @@ def get_slide_size(fn_slide, level):
 
 
 
-def get_nearest_mpp(slide, mpp_requested, ratio_max):
+def get_nearest_mpp(slide, mpp_requested, ratio_max = 1.0):
 
     mpp_x_0, mpp_y_0, is_from_mpp_xy = get_mpp_slide(slide)
     #   각 downsample마다
@@ -196,6 +232,7 @@ def get_nearest_mpp(slide, mpp_requested, ratio_max):
         # 비율을 리스트에 넣는다
         r_x = mpp_x_l / mpp_requested
         r_y = mpp_y_l / mpp_requested
+        #   the default valude of ratio_max is 1.0
         if ratio_max < r_y or ratio_max < r_x:
         #if level and (th_ratio < r_y or th_ratio < r_x):
             break
