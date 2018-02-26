@@ -13,7 +13,13 @@ import patch_classifier
 from config import get_config
 from skimage.transform import resize
 
+
 def compute_patch_pos_to_sample(im_discri_ij, thres_descri, w_h_inve):
+    li_ijm_discri_ij_bool = im_discri_ij > thres_descri
+    li_ij = np.where(li_ijm_discri_ij_bool)
+    li_xy = li_ij * w_h_inve
+    return li_xy
+
 
 
 
@@ -64,9 +70,10 @@ def prepare_from_arguments(config):
     stride_factor = 1.0
     tissue_detection_method = config.tissue_detection
     use_gpu = config.use_gpu
+    thres_descri = config.thres_desciriminative
     #return li_fn_slide, li_mpp, n_iter
     return li_mpp, n_iter, di_slide_cancer_or_not, len_tile_pxl, stride_factor, \
-           tissue_detection_method, use_gpu
+           tissue_detection_method, use_gpu, thres_descri
 
 # The smaller mpp, the better resolution
 def make_tile_pos_of_heatmap(fn_slide, mpp_2_investigate, len_tile_pxl_inve, stride_factor,
@@ -258,7 +265,7 @@ def main():
     #config, unparsed = get_config()
     config, li_fn_slide = get_config()
     li_mpp_inve, n_iter, di_slide_cancer_or_not, len_tile_pxl_inve, stride_factor, \
-    tissue_detection_method, use_gpu = \
+    tissue_detection_method, use_gpu, thres_descri = \
         prepare_from_arguments(config)
     ############################################################################################
     li_label = \
@@ -274,11 +281,11 @@ def main():
     ############################################################################################
     li_model = \
         update_model(li_model, n_iter, li_mpp_inve, li_fn_slide, li_li_im_discri_ij,
-                     li_xywh_inve, li_label)
+                     li_xywh_inve, li_label, thres_descri)
     ############################################################################################
 
 
-# -g 0 -t near-magenta -L 500 -l slide_cancer_or_not.csv /mnt/nfs/users/yscha/eval_68/06_S15-11514-11.svs /mnt/nfs/users/yscha/eval_68/06_S15-11514-2.svs
+# -T 0.5 -g 0 -t near-magenta -L 500 -l slide_cancer_or_not.csv /mnt/nfs/users/yscha/eval_68/06_S15-11514-11.svs /mnt/nfs/users/yscha/eval_68/06_S15-11514-2.svs
 if __name__=='__main__':
 
     main()

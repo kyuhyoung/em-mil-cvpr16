@@ -28,6 +28,8 @@ parser.add_argument('-m', '--mpp', nargs=2, type=float,
                     default=[0.5, 4.0], help='micron per pixel of model')
 parser.add_argument('-t', '--tissue_detection', type=str, #default='directory',
                     choices=['edge', 'near-magenta', 'non-white'], help='method of tissue detection')
+parser.add_argument('-T', '--thres_desciriminative', type=float, #default='directory',
+                    help='method of tissue detection')
 
 
 '''
