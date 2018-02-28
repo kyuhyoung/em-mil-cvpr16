@@ -18,10 +18,18 @@ def add_argument_group(name):
 # Data
 
 # default=0.493
+parser.add_argument('-b', '--batch_size', type=int, #default=3,
+                    help='# images per batch')
+parser.add_argument('-d', '--is_debug', type=int, #default='directory',
+                    choices=[0, 1], help='whether it is debug mode or not')
+parser.add_argument('-e', '--epoch', nargs=2, type=int,
+                    default=[5, 5], help='# of iterations')
 parser.add_argument('-g', '--use_gpu', type=int, #default='directory',
                     choices=[0, 1], help='whether use GPU or not')
-parser.add_argument('-i', '--iter', type=int,
-                    default=100, help='# of iterations')
+parser.add_argument('-i', '--iter', nargs=2, type=int,
+                    default=[100, 100], help='# of iterations')
+#parser.add_argument('-i', '--iter', type=int,
+#                    default=100, help='# of iterations')
 parser.add_argument('-l', '--fn_slide_label', type=str, help='name of csv file where [slide id] - [slide level annotation] pair is listed.')
 parser.add_argument('-L', '--len_tile_pxl', type=int, help='side length of tile')
 parser.add_argument('-m', '--mpp', nargs=2, type=float,
@@ -30,7 +38,8 @@ parser.add_argument('-t', '--tissue_detection', type=str, #default='directory',
                     choices=['edge', 'near-magenta', 'non-white'], help='method of tissue detection')
 parser.add_argument('-T', '--thres_desciriminative', type=float, #default='directory',
                     help='method of tissue detection')
-
+parser.add_argument('-w', '--n_worker', type=int, #default=3,
+                    help='# of workers')
 
 '''
 data_arg = add_argument_group('Data')

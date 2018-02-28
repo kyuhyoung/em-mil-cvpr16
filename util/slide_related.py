@@ -5,6 +5,7 @@ from .system_related import get_exact_file_name_from_path
 import cv2
 import numpy as np
 from skimage.transform.integral import integral_image
+from skimage.transform import resize
 from os import listdir
 from os.path import join, isfile, exists, splitext
 from openslide import OpenSlide
@@ -15,9 +16,23 @@ from .image_related import is_this_patch_below_threshold, get_opencv_contours_fr
 from .system_related import round_i
 from xml.etree.ElementTree import parse
 
-
 #def compute_scale(level):
 #    return 1.0 / pow(2, level)
+
+def read_region_dummy(slaid, x_y_0, level, w_h_l):
+    return slaid.read_region(x_y_0, level, w_h_l).convert('RGB')
+    '''
+    tile_0255_l = slaid.read_region(x_y_0, level, w_h_l)
+    tile_0255_l = tile_0255_l.convert('RGB')
+    w_h_inve = (int(t / 2) for t in w_h_l)
+    tile_0255_inve = tile_0255_l.resize(w_h_inve, Image.BICUBIC)
+    tile_0255_l.save('before.jpg')
+    tile_0255_inve.save('after.jpg')
+    #cv2.imwrite('before.jpg', cv2.cvtColor(tile_0255_l, cv2.COLOR_BGR2RGB))
+    #cv2.imwrite('after.jpg', cv2.cvtColor(tile_0255_inve, cv2.COLOR_BGR2RGB))
+    '''
+
+
 def get_scale(tu_downsample, i_level):
     return tu_downsample[i_level]
 
@@ -97,26 +112,62 @@ def get_image_size_of_level_n_minimal(openslaid, level_to, size_from, level_from
     return w_to, h_to
 
 
-def get_subimage_0255(slide, level, x_y, w_h):
+def get_subimage_mpp_0255(slaid, mpp_inve, x_y_inve, w_h_inve, is_debug):
+
+    level, mpp_x_best, mpp_y_best, r_x_best, r_y_best = \
+        get_nearest_mpp(slaid, mpp_inve, ratio_max=1.0)
+
+    mpp_x_0, mpp_y_0, is_from_mpp_xy = get_mpp_slide(slaid)
+    mpp_0 = 0.5 * (mpp_x_0 + mpp_y_0)
 
     #location = (x, y)
     #saiz = (w, h)
-    tile_0255 = slide.read_region(x_y, level, w_h)
+    mpp_l = 0.5 * (mpp_x_best + mpp_y_best)
+    skale_0_over_inve = mpp_inve / mpp_0
+    skale_l_over_inve = mpp_inve / mpp_l
+    x_y_0 = tuple(round_i(t * skale_0_over_inve) for t in x_y_inve)
+    w_h_l = tuple(round_i(t * skale_l_over_inve) for t in w_h_inve)
+    #tile_0255_l = slaid.read_region(x_y_0, level, w_h_l)
+    tile_0255_l = read_region_dummy(slaid, x_y_0, level, w_h_l)
+    tile_0255_l.convert('RGB')
+    tile_0255_inve = tile_0255_l.resize(w_h_inve, Image.BICUBIC)
+    if is_debug:
+        tile_0255_l.save('before.jpg')
+        tile_0255_inve.save('after.jpg')
+        #cv2.imwrite('before.jpg', cv2.cvtColor(tile_0255_l, cv2.COLOR_BGR2RGB))
+        #cv2.imwrite('after.jpg', cv2.cvtColor(tile_0255_inve, cv2.COLOR_BGR2RGB))
+
+        #t1 = tile_0255_l.thumbnail(w_h_inve)
+    #tile_0255_l.thumbnail(w_h_inve)
+    im_rgb = np.array(tile_0255_inve)
+    if 3 < im_rgb.shape[2]:
+        im_rgb = im_rgb[:, :, 0:3]
+    return im_rgb
+
+
+def get_subimage_level_0255(slaid, level, x_y_l, w_h_l):
+
+    #location = (x, y)
+    #saiz = (w, h)
+    skale = slaid.level_downsamples[level]
+    x_y_0 = (t * skale for t in x_y_l)
+    tile_0255 = read_region_dummy(slaid, x_y_0, level, w_h_l) # slaid.read_region(x_y_0, level, w_h_l)
     im_rgb = np.array(tile_0255)
     if 3 < im_rgb.shape[2]:
         im_rgb = im_rgb[:, :, 0:3]
     return im_rgb
 
 
-def get_subimage_0_0255(slide, x_y, w_h):
-    return get_subimage_0255(slide, 0, x_y, w_h)
+def get_subimage_0_0255(slide, x_y_0, w_h_0):
+    return get_subimage_level_0255(slide, 0, x_y_0, w_h_0)
 
 
 
-def get_subimage_01_for_cnn(slide, level, x_y, w_h):
+def get_subimage_01_for_cnn(slide, level, x_y_0, w_h_1):
     #location = (x, y)
     #saiz = (w, h)
-    tile = slide.read_region(x_y, level, w_h)
+    #tile = slide.read_region(x_y, level, w_h)
+    tile = read_region_dummy(slide, x_y_0, level, w_h_1)
     #tile = tile.astype(np.float32)
     tile = np.divide(tile, 255.)
     tile = np.transpose(tile, [2, 0, 1])
@@ -272,7 +323,8 @@ def read_slide(path_img, level, max_width_height, shall_save_as_jpg = False, fn_
         print('Either width or height is bigger than 65500 !!\n\n')
         return None, None, None, None, None
     try:
-        slideimg = slide.read_region((0, 0), level, (w_level, h_level))
+        #slideimg = slide.read_region((0, 0), level, (w_level, h_level))
+        slideimg = read_region_dummy(slide, (0, 0), level, (w_level, h_level))
     except:
         print('Can NOT read the region from this slide with OpenSlide : ' + path_img)
         print('I do not know why. Just can not read !!')

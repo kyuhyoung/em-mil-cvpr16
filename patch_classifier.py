@@ -11,12 +11,12 @@ import numpy as np
 
 import util.image_related as image_rel
 
-class VGG(nn.Module):
+class VGG_Choi(nn.Module):
     '''
     VGG model
     '''
     def __init__(self, features):
-        super(VGG, self).__init__()
+        super(VGG_Choi, self).__init__()
         self.features = features
         self.classifier = nn.Sequential(
             nn.Dropout(),
@@ -43,7 +43,7 @@ class VGG(nn.Module):
         x = x.view(x.size(0), -1)
         #print (x.size())
         x = self.classifier(x)
-        print (x.size())
+        #print (x.size())
         return x
 
 
@@ -81,7 +81,7 @@ cfg_H = [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M', 512, 51
 
 def vgg19(w_h_input_img, batch_norm):
     """VGG 19-layer model (configuration "E")"""
-    return VGG(make_layers(
+    return VGG_Choi(make_layers(
         #cfg_E,
         #cfg_A,
         #cfg_F,
