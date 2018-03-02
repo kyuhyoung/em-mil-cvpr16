@@ -117,6 +117,6 @@ def create_patch_classifier(w_h_input_img, use_bn, use_gpu):
         model.features = torch.nn.DataParallel(model.features)
         model.cuda()
     is_ok = probe_patch_classifier(model, w_h_input_img)
-    if is_ok is False:
+    if not is_ok:
         model = None
     return model

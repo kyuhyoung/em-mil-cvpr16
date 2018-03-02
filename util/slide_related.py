@@ -141,7 +141,7 @@ def get_subimage_mpp_0255(slaid, mpp_inve, x_y_inve, w_h_inve, is_debug):
     #tile_0255_l.thumbnail(w_h_inve)
     im_rgb = np.array(tile_0255_inve)
     if 3 < im_rgb.shape[2]:
-        im_rgb = im_rgb[:, :, 0:3]
+        im_rgb = im_rgb[:, :, :3]
     return im_rgb
 
 
