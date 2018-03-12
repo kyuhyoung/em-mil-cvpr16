@@ -31,9 +31,12 @@ parser.add_argument('-i', '--iter', nargs=2, type=int,
 #parser.add_argument('-i', '--iter', type=int,
 #                    default=100, help='# of iterations')
 parser.add_argument('-l', '--fn_slide_label', type=str, help='name of csv file where [slide id] - [slide level annotation] pair is listed.')
-parser.add_argument('-L', '--len_tile_pxl', type=int, help='side length of tile')
+parser.add_argument('-L', '--len_tile_pxl', nargs= 2, type=int, #default=[500, 500],
+                    help='side length of tile')
 parser.add_argument('-m', '--mpp', nargs=2, type=float,
                     default=[0.5, 4.0], help='micron per pixel of model')
+parser.add_argument('-p', '--n_proc', type=int, #default=4,
+                    help="# processes for making batch")
 parser.add_argument('-t', '--tissue_detection', type=str, #default='directory',
                     choices=['edge', 'near-magenta', 'non-white'], help='method of tissue detection')
 parser.add_argument('-T', '--thres_desciriminative', type=float, #default='directory',

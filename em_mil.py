@@ -29,7 +29,7 @@ def read_region_tissue(params):
         points (int tuple) : set of x, y points to be calculated.
         sub (str) : subject slide name to be classified.
     """
-    queue, slaid, mpp_inve, w_h_inve, li_xy_inve, li_ij = params
+    queue, slaid, mpp_inve, w_h_inve, li_xy_inve, li_ij, transphorm = params
     #queue, patch_size, points, sub = params
     #slide = OpenSlide(os.path.join(args.sub_path, sub))
     #slide_size = patch_size + (patch_size//2)*2
@@ -41,10 +41,13 @@ def read_region_tissue(params):
             #                          0,
             #                          (slide_size, slide_size))
             patch = slide_rel.get_subimage_mpp_0255(slaid, mpp_inve, xy_inve, False)
+            '''
             #patch = np.array(patch)[..., :3]
 
             patch = patch.astype(np.float32)
             patch = np.ascontiguousarray(patch, dtype=np.float32)
+            '''
+            t_patch = transphorm(patch)
             if patch.shape != (w_h_inve[1], w_h_inve[0], 3):
                 raise Exception('[!] Error : shape is somehow wrong')
             while True:
@@ -52,7 +55,7 @@ def read_region_tissue(params):
                     time.sleep(0.1)
                 else:
                     #queue.put((patch, xy_inve[0], xy_inve[1]))
-                    queue.put((patch,  xy_inve[0], xy_inve[1]))
+                    queue.put((t_patch, li_ij[ii][0], li_ij[ii][1]))
                     break
         return True
     except Exception as e:
@@ -69,59 +72,86 @@ def make_zero_heatmap(w_h):
 
 
 def update_heatmap(slaid, model, mpp_inve, li_ij_tissue, w_h_inve, num_ij, n_proc,
-                   batch_size, use_gpu):
+                   batch_size, transphorm, use_gpu):
     # make zero heatmap
     im_heatmap_ij = make_zero_heatmap(num_ij)
     # set the model as test mode
     model.eval()
     # for each tissue position
-    li_xy_inve_tissue = [tuple(map(lambda a, b: a * b, ij_tissue, w_h_inve)) for ij_tissue in li_ij_tissue]
+    if n_proc > 0:
+        li_xy_inve_tissue = [tuple(map(lambda a, b: a * b, ij_tissue, w_h_inve)) for ij_tissue in li_ij_tissue]
+        queue_size = batch_size * n_proc
+        queue = Manager().Queue(queue_size)
+        pool = Pool(n_proc)
 
-    queue_size = batch_size * n_proc
-    queue = Manager().Queue(queue_size)
-    pool = Pool(n_proc)
+        split_points = []
+        for i in range(n_proc):
+            split_points.append(li_xy_inve_tissue[i::n_proc])
+        result = pool.map_async(read_region_tissue,
+                                [(queue, slaid, mpp_inve, w_h_inve, li_xy_inve, transphorm)
+                                 for li_xy_inve in split_points])
+        li_ij, li_patch_inve = [], []
+        while True:
+            if queue.empty():
+                if not result.ready():
+                    time.sleep(0.5)
+                elif result.ready() and 0 == len(li_patch_inve):
+                    break
+            else:
+                patch_inve, i, j = queue.get()
+                li_ij.append((i, j))
+                li_patch_inve.append(patch_inve)
 
-    split_points = []
-    for i in range(n_proc):
-        split_points.append(li_xy_inve_tissue[i::n_proc])
-    result = pool.map_async(read_region_tissue,
-                            [(queue, slaid, mpp_inve, w_h_inve, li_xy_inve, transform)
-                             for li_xy_inve in split_points])
-    li_ij, li_patch_inve = [], []
-    while True:
-        if queue.empty():
-            if not result.ready():
-                time.sleep(0.5)
-            elif result.ready() and 0 == len(li_patch_inve):
-                break
-        else:
-            patch_inve, i, j = queue.get()
-            li_ij.append((i, j))
-            li_patch_inve.append(patch_inve)
+            if len(li_patch_inve) == batch_size or \
+                    (result.ready() and queue.empty() and len(li_patch_inve) > 0):
+                batch = Variable(torch.FloatTensor(np.stack(li_patch_inve)),
+                                 volatile=True)
+                if use_gpu:
+                    batch = batch.cuda()
+                start_time = time.time()
+                output = model(batch)
+                elapsed_batch = time.time() - start_time
+                output = output.cpu().data.numpy()[:, 0]
+                logging.debug(f'elapsed time for computing one batch is '
+                              + f'{elapsed_batch:.3f}')
+                n_img_in_this_batch = batch.size(0)
+                for ii in range(n_img_in_this_batch):
+                    i, j = li_ij[ii]
+                    im_heatmap_ij[j, i] = output[ii]
+                logging.debug(queue.qsize())
+                li_ij, li_patch_inve = [], []
 
-        if len(li_patch_inve) == batch_size or \
-                (result.ready() and queue.empty() and len(li_patch_inve) > 0):
-            batch = Variable(torch.FloatTensor(np.stack(li_patch_inve)),
-                             volatile=True)
-            if use_gpu:
-                batch = batch.cuda()
-            start_time = time.time()
-            output = model(batch)
-            elapsed_batch = time.time() - start_time
-            output = output.cpu().data.numpy()[:, 0]
-            logging.debug(f'elapsed time for computing one batch is '
-                          + f'{elapsed_batch:.3f}')
-            n_img_in_this_batch = batch.size(0)
-            for ii in range(n_img_in_this_batch):
-                i, j = li_ij[ii]
-                im_heatmap_ij[j, i] = output[ii]
-            logging.debug(queue.qsize())
-            li_ij, li_patch_inve = [], []
-
-    if not result.successful():
-        logging.debug('[!] Error: something wrong in result.')
-    pool.close()
-    pool.join()
+        if not result.successful():
+            logging.debug('[!] Error: something wrong in result.')
+        pool.close()
+        pool.join()
+    else:
+        n_ij = len(li_ij_tissue)
+        li_ij, li_t_patch_tissue = [], []
+        for ii, ij_tissue in enumerate(li_ij_tissue):
+            xy_inve_tissue = tuple(map(lambda a, b: a * b, ij_tissue, w_h_inve))
+            patch = slide_rel.get_subimage_mpp_0255(slaid, mpp_inve, xy_inve_tissue, w_h_inve, False)
+            t_patch = transphorm(patch)
+            li_t_patch_tissue.append(t_patch)
+            li_ij.append(ij_tissue)
+            n_patch = len(li_t_patch_tissue)
+            if (n_patch >= batch_size) or (ii == n_ij - 1):
+                #batch_tissue = Variable(torch.FloatTensor(np.stack(li_t_patch tissue)), volatile=True)
+                batch_tissue = Variable(torch.stack(li_t_patch_tissue), volatile=True)
+                if use_gpu:
+                    batch_tissue = batch_tissue.cuda()
+                start_time = time.time()
+                output = model(batch_tissue)
+                elapsed_batch = time.time() - start_time
+                output_np = output.cpu().data.numpy()[:, 0]
+                logging.debug(f'elapsed time for computing one batch is '
+                              + f'{elapsed_batch:.3f}')
+                n_img_in_this_batch = batch_tissue.size(0)
+                for iI in range(n_img_in_this_batch):
+                    i, j = li_ij[iI]
+                    im_heatmap_ij[j, i] = output_np[iI]
+                li_ij, li_t_patch_tissue = [], []
+    dummy = 0
     return im_heatmap_ij
 
 
@@ -142,6 +172,11 @@ def train_model(model, train_loader, optimizer, criterion, running_loss, n_img_t
             optimizer.zero_grad()
             # forward + backward + optimize
             outputs = model(inputs)
+
+            t1 = outputs.cpu().data.numpy()[:, 0]
+            print (t1)
+            t2 = labels.cpu().data.numpy()
+            print (t2)
             # labels += 10
             loss = criterion(outputs, labels)
             loss.backward()
@@ -153,6 +188,9 @@ def train_model(model, train_loader, optimizer, criterion, running_loss, n_img_t
             #n_image_total += n_img_per_batch
             n_img_total += n_img_4_batch
             print ('{} | {} : {}'.format(e, i, loss_current))
+            print('\t', t1)
+            print('\t', t2)
+            dummy = 0
         dummy = 0
 
     return model, optimizer, running_loss, n_img_total
@@ -234,27 +272,28 @@ def prepare_from_arguments(config):
     li_n_epoch = config.epoch
     di_slide_cancer_or_not = get_slide_labels(config.fn_slide_label)
     di_cancer_or_not_slide, di_label_s_label_i = make_dict_label_li_fn(di_slide_cancer_or_not)
-    len_tile_pxl = config.len_tile_pxl
+    li_len_tile_pxl = config.len_tile_pxl
     stride_factor = 1.0
     tissue_detection_method = config.tissue_detection
     use_gpu = config.use_gpu
     thres_descri = config.thres_desciriminative
     n_img_per_batch = config.batch_size
+    n_proc = config.n_proc
     n_worker = config.n_worker
     is_debug = config.is_debug is not 0
     trans = vis_trans.Compose([
         vis_trans.ToTensor()
-        , vis_trans.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        #, vis_trans.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
     li_transform = [trans, trans]
     #return li_fn_slide, li_mpp, n_iter
     return li_mpp, li_n_iter, li_n_epoch, di_slide_cancer_or_not, di_cancer_or_not_slide, di_label_s_label_i,\
-           len_tile_pxl, stride_factor, tissue_detection_method, use_gpu, thres_descri, li_transform, \
-           n_img_per_batch, n_worker, is_debug
+           li_len_tile_pxl, stride_factor, tissue_detection_method, use_gpu, thres_descri, li_transform, \
+           n_img_per_batch, n_proc, n_worker, is_debug
 
 
 # The smaller mpp, the better resolution
-def make_tile_pos_of_heatmap(fn_slide, mpp_2_investigate, len_tile_pxl_inve, stride_factor,
+def make_tile_pos_of_heatmap(fn_slide, mpp_2_investigate, wh_inve, stride_factor,
                              mpp_0_slide, tissue_detection_method,
                              im_edge_integral, level_integral, is_debug):
     scale_from_level_0_2_level_inve = mpp_0_slide / mpp_2_investigate
@@ -268,12 +307,12 @@ def make_tile_pos_of_heatmap(fn_slide, mpp_2_investigate, len_tile_pxl_inve, str
     width_0, height_0 = slaid.level_dimensions[0]
     #   해당 레벨의 mpp를 구한다.
     #   해당 레벨에서의 tile의 사이즈를 구한다.
-    w_inve, h_inve = len_tile_pxl_inve, len_tile_pxl_inve
+    w_inve, h_inve = wh_inve
     #   티슈 맵에서의 tile의 사이즈를 구한다.
     w_0 = sys_rel.round_i(w_inve / scale_from_level_0_2_level_inve)
     h_0 = sys_rel.round_i(h_inve / scale_from_level_0_2_level_inve)
     #   해당 레벨에서의 stride_pxl을 구한다.
-    stride_pxl_inve = stride_factor * len_tile_pxl_inve
+    stride_pxl_inve = stride_factor * 0.5 * (w_inve + h_inve)
     #   해당 레벨 이미지의 사이즈를 구한다.
     height_inve, width_inve = \
         height_0 * scale_from_level_0_2_level_inve, width_0 * scale_from_level_0_2_level_inve
@@ -339,7 +378,7 @@ def make_label_list(li_fn_slide, di_slide_cancer_or_not):
     return li_label
 
 ############################################################################################
-def initialize(li_mpp_2_investigate, li_fn_slide, len_tile_pxl_inve, stride_factor,
+def initialize(li_mpp_2_investigate, li_fn_slide, li_wh_inve, stride_factor,
                tissue_detection_method, use_gpu, is_debug):
     n_res = len(li_mpp_2_investigate)
     n_slide = len(li_fn_slide)
@@ -347,14 +386,15 @@ def initialize(li_mpp_2_investigate, li_fn_slide, len_tile_pxl_inve, stride_fact
     li_mpp_0_slide = n_slide * [None]    # The actual mpp of test slides
     li_model = n_res * [None] \
     #li_im_count = []
-    li_li_num_ij, li_li_xywh_inve, li_li_im_discri_ij = \
-        n_slide * [None], n_slide * [None], n_slide * [None]
+    li_li_num_ij, li_li_li_ij_tissue, li_li_xywh_inve, li_li_im_discri_ij = \
+        n_slide * [None], n_slide * [None], n_slide * [None], n_slide * [None]
     for iS, fn_slide in enumerate(li_fn_slide):
         slaid = slide_rel.get_slide(fn_slide)
         mpp_x, mpp_y, is_from_mpp_xy = slide_rel.get_mpp_slide(slaid)
         li_mpp_0_slide[iS] = 0.5 * (mpp_x + mpp_y)
         li_li_im_discri_ij[iS] = n_res * [None]
         li_li_num_ij[iS] = n_res * [None]
+        li_li_li_ij_tissue[iS] = n_res * [None]
         li_li_xywh_inve[iS] = n_res * [None]
         if tissue_detection_method is 'edge':
             ret = slide_rel.get_nearest_mpp(slaid, 1.0)
@@ -363,19 +403,23 @@ def initialize(li_mpp_2_investigate, li_fn_slide, len_tile_pxl_inve, stride_fact
             li_im_edge_integral[iS] = image_rel.compute_edge_integral(im_rgb_4_edge)
     # 각 레졸루션에 대해
     for iR, mpp_2_investigate in enumerate(li_mpp_2_investigate):
-        w_h_inve = (len_tile_pxl_inve, len_tile_pxl_inve)
-        li_model[iR] = patch_classifier.create_patch_classifier(w_h_inve, True, use_gpu)
+        li_wh_inve[iR]
+        #w_h_inve = (len_tile_pxl_inve, len_tile_pxl_inve)
+        li_model[iR] = patch_classifier.create_patch_classifier(li_wh_inve[iR], True, use_gpu)
         # 각 슬라이드에 대해서
         for iS, fn_slide in enumerate(li_fn_slide):
             # 아이디를 구한다.
             id_slide = sys_rel.get_exact_file_name_from_path(fn_slide)
             # 티슈의 패치 세트를 만든다.
             li_xywh_inve, li_ij_inve, num_ij = make_tile_pos_of_heatmap(
-                fn_slide, mpp_2_investigate, len_tile_pxl_inve, stride_factor,
+                fn_slide, mpp_2_investigate, li_wh_inve[iR], stride_factor,
                 li_mpp_0_slide[iS], tissue_detection_method,
                 li_im_edge_integral[iS], li_level_edge[iS], is_debug)
             if li_li_num_ij[iS][iR] is None:
                 li_li_num_ij[iS][iR] = num_ij
+            if li_li_li_ij_tissue[iS][iR] is None:
+                li_ij_tissue = list(li_ij_inve)
+                li_li_li_ij_tissue[iS][iR] = li_ij_tissue
             #if iR:
                 #di_slide_res_tiles[iS].append(li_tile_pos)
             #else:
@@ -390,7 +434,7 @@ def initialize(li_mpp_2_investigate, li_fn_slide, len_tile_pxl_inve, stride_fact
                     set_heat_map(li_li_im_discri_ij[iS][iR], ij_inve, 1.0, li_li_num_ij[iS][iR])
             li_li_xywh_inve[iR][iS] = li_xywh_inve
         # 학습기를 초기화한다.
-    return li_model, li_li_im_discri_ij, li_xywh_inve#, li_im_count
+    return li_model, li_li_im_discri_ij, li_xywh_inve, li_li_li_ij_tissue, li_li_num_ij
 
 ############################################################################################
 def normalize_heatmaps(li_fn_slide):
@@ -403,8 +447,8 @@ def normalize_heatmaps(li_fn_slide):
 
 ############################################################################################
 def update_model(li_model, li_n_iter, li_mpp_inve, li_fn_slide, li_li_im_discri_ij, li_wh_inve,
-                 li_label_s, li_n_epoch, thres_descri, di_label_s_label_i, li_transform,
-                 n_img_per_batch, n_worker, use_gpu, is_debug):
+                 li_label_s, li_n_epoch, thres_descri, di_label_s_label_i, li_transform, li_li_li_ij_tissue,
+                 li_li_num_ij, n_proc, n_img_per_batch, n_worker, use_gpu, is_debug):
     # 각 resolution에 대해
     n_resol = len(li_mpp_inve)
 
@@ -447,12 +491,19 @@ def update_model(li_model, li_n_iter, li_mpp_inve, li_fn_slide, li_li_im_discri_
                     i_from = len(li_im_patch) - n_patch
                     if mpp_inve > 1:
                         dummy = 0
-                    [cv2.imwrite(
-                        'im_patch_{}_{}_{}_{}_torch.jpg'.format(id_slide, mpp_inve,
-                                                       int(li_patch_xy_inve[i][0] / li_wh_inve[iR]),
-                                                       int(li_patch_xy_inve[i][1] / li_wh_inve[iR])),
-                        cv2.cvtColor(im_rgb, cv2.COLOR_BGR2RGB)
-                    ) for i, im_rgb in enumerate(li_im_patch[i_from::])]
+                    #t1 = li_im_patch[i_from::]
+                    #t2 = li_im_patch[i_from:]
+                    t1 = li_wh_inve[iR][0]
+                    t2 = li_wh_inve[iR][1]
+                    for i, im_rgb in enumerate(li_im_patch[i_from:]):
+                        print ('{} / {}'.format(i, n_patch))
+                        cv2.imwrite(
+                            'im_patch_{}_{}_{}_{}_torch.jpg'.format(
+                                id_slide, mpp_inve,
+                                int(li_patch_xy_inve[i][0] / li_wh_inve[iR][0]),
+                                int(li_patch_xy_inve[i][1] / li_wh_inve[iR][1])),
+                            cv2.cvtColor(im_rgb, cv2.COLOR_BGR2RGB)
+                        )
                     dummy = 0
 
             li_ts_img = [li_transform[iR](im_patch) for im_patch in li_im_patch]
@@ -479,15 +530,15 @@ def update_model(li_model, li_n_iter, li_mpp_inve, li_fn_slide, li_li_im_discri_
                             li_running_loss[iR], li_n_img_total[iR], li_n_epoch[iR], use_gpu)
 
 
-            for iS, slaid in enumerate(li_slide):
+            for iS, fn_slide in enumerate(li_fn_slide):
+                slaid = OpenSlide(fn_slide)
                 li_li_im_discri_ij[iS][iR] = update_heatmap(
-                    slaid, li_model[iR], mpp_inve, li_li_ij_tissue[iS][iR], li_wh_inve[iR],
-                    num_ij, n_proc, batch_size, li_transform[iR], use_gpu)
+                    slaid, li_model[iR], mpp_inve, li_li_li_ij_tissue[iS][iR], li_wh_inve[iR],
+                    li_li_num_ij[iS][iR], n_proc, n_img_per_batch, li_transform[iR], use_gpu)
 
-            update_heatmap()
             # 각 슬라이드에 대해
             for iS, fn_slide in enumerate(li_fn_slide):
-                slide = openslide(fn_slide)
+                slaid = OpenSlide(fn_slide)
                 # 각 티슈 패치에 대해 평가를 하여 discriminive flag를 매긴다.
                 for tile_pos_l in li_li_tile_pos[iS][iR]:
                     im_tile = get_sub_image(slide, tile_pos_l, mpp, mpp_standard)
@@ -510,32 +561,34 @@ def main():
     #config, unparsed = get_config()
     config, li_fn_slide = get_config()
     li_mpp_inve, li_n_iter, li_n_epoch, di_slide_cancer_or_not, di_cancer_or_not_li_fn_slide, di_label_s_label_i, \
-    len_tile_pxl_inve, stride_factor, tissue_detection_method, use_gpu, thres_descri, li_transform, \
-    n_img_per_batch, n_worker, is_debug = \
+    li_len_tile_pxl_inve, stride_factor, tissue_detection_method, use_gpu, thres_descri, li_transform, \
+    n_img_per_batch, n_proc, n_worker, is_debug = \
         prepare_from_arguments(config)
     ############################################################################################
     li_label_s = \
         make_label_list(li_fn_slide, di_slide_cancer_or_not)
     ############################################################################################
-
-    w_h_inve = (len_tile_pxl_inve, len_tile_pxl_inve)
-    li_model, li_li_im_discri_ij, li_xywh_inve = \
-        initialize(li_mpp_inve, li_fn_slide, len_tile_pxl_inve,
+    li_wh_inve = [(len_tile_pxl_inve, len_tile_pxl_inve) for len_tile_pxl_inve in li_len_tile_pxl_inve]
+    li_model, li_li_im_discri_ij, li_xywh_inve, li_li_li_ij_tissue, li_li_num_ij = \
+        initialize(li_mpp_inve, li_fn_slide, li_wh_inve,
                    stride_factor, tissue_detection_method, use_gpu, is_debug)
 
 
     ############################################################################################
     #li_li_im_discriminative = normalize_heatmaps(li_fn_slide)
     ############################################################################################
-    li_model = update_model(li_model, li_n_iter, li_mpp_inve, li_fn_slide, li_li_im_discri_ij, w_h_inve,
-                            li_label_s, li_n_epoch, thres_descri, di_label_s_label_i, li_transform,
-                            n_img_per_batch, n_worker, use_gpu, is_debug)
+    li_model = update_model(li_model, li_n_iter, li_mpp_inve, li_fn_slide, li_li_im_discri_ij, li_wh_inve,
+                            li_label_s, li_n_epoch, thres_descri, di_label_s_label_i, li_transform, li_li_li_ij_tissue,
+                            li_li_num_ij, n_proc, n_img_per_batch, n_worker, use_gpu, is_debug)
 
 
 ############################################################################################
 
-##-d 1 -b 10 -w 2 -e 5 5 -m 0.5 4.0 -i 10 10 -T 0.5 -g 0 -t near-magenta -L 500 -l slide_cancer_or_not.csv /mnt/nfs/users/yscha/eval_68/06_S15-11514-11.svs /mnt/nfs/users/yscha/eval_68/06_S15-11514-2.svs
-#-d 1 -b 10 -w 2 -e 5 5 -m 0.5 2.5 -i 10 10 -T 0.5 -g 0 -t near-magenta -L 500 -l slide_cancer_or_not.csv /mnt/nfs/users/yscha/eval_68/06_S15-11514-11.svs /mnt/nfs/users/yscha/eval_68/06_S15-11514-2.svs
+##-d 1 -b 10 -w 2 -e 5 5 -m 0.5 2.5 -i 10 10 -T 0.5 -g 0 -t near-magenta -L 500 -l slide_cancer_or_not.csv /mnt/nfs/users/yscha/eval_68/06_S15-11514-11.svs /mnt/nfs/users/yscha/eval_68/06_S15-11514-2.svs
+#-p 4 -d 1 -b 10 -w 2 -e 2 2 -m 0.5 2.5 -i 10 10 -T 0.5 -g 0 -t near-magenta -L 500 500 -l slide_cancer_or_not.csv /mnt/nfs/users/yscha/eval_68/06_S15-11514-11.svs /mnt/nfs/users/yscha/eval_68/06_S15-11514-2.svs
+
+#   for 1 mpp and 2 slides
+#-p 4 -d 1 -b 10 -w 2 -e 2 -m 0.5 -i 10 -T 0.5 -g 0 -t near-magenta -L 500 -l slide_cancer_or_not.csv /mnt/nfs/users/yscha/eval_68/06_S15-11514-11.svs /mnt/nfs/users/yscha/eval_68/06_S15-11514-2.svs
 
 if __name__=='__main__':
 
