@@ -12,6 +12,7 @@ import numpy as np
 import patch_classifier
 from config import get_config
 from torch.autograd import Variable
+import torch.nn.functional as F
 import torch.utils.data as utils_data
 import torchvision.transforms as vis_trans
 import torch.optim as optim
@@ -203,6 +204,8 @@ def update_heatmap_no_parallel(slaid, model, im_heatmap_ij, mpp_inve, transphorm
             logging.debug(f'elapsed time for computing one batch is '
                           + f'{elapsed_batch:.3f}')
             n_img_in_this_batch = batch_tissue.size(0)
+            proba = F.softmax(output)
+            proba_np = proba.cpu().data.numpy()
             for iI in range(n_img_in_this_batch):
                 if is_debug and 0 == i_batch and 0 == iI:
                     slide_id, i_j, inpoot, outpoot = slide_id_ij_input_output_last_tissue
@@ -213,18 +216,22 @@ def update_heatmap_no_parallel(slaid, model, im_heatmap_ij, mpp_inve, transphorm
                     print('inpoot_last : ', inpoot)
                     print('batch_tissue.cpu().data.numpy()[iI, :, :, :] : ', batch_tissue.cpu().data.numpy()[iI, :, :, :])
                 i, j = li_ij[iI]
-                im_heatmap_ij[j, i] = output_np[iI]
+                #im_heatmap_ij[j, i] = output_np[iI]
+                #prob_tumor = proba_np[iI, -1]
+                im_heatmap_ij[j, i] = proba_np[iI, -1]
             li_ij, li_t_patch_tissue = [], []
             i_batch += 1
-
+    prob_max = im_heatmap_ij.min()
+    prob_min = im_heatmap_ij.max()
     return im_heatmap_ij
 
 
 def update_heatmap(slaid, model, mpp_inve, li_ij_tissue, wh_inve, num_ij, n_proc,
                    batch_size, transphorm, use_gpu, is_debug,
-                   slide_id_ij_input_output_last_tissue):
+                   slide_id_ij_input_output_last_tissue, one_over_n_sliding = 1):
     # make zero heatmap
-    im_heatmap_ij = make_zero_heatmap(num_ij)
+    im_heatmap_ij = make_zero_heatmap(num_ij, one_over_n_sliding)
+    im_count_ij = make_zero_heatmap(num_ij, one_over_n_sliding)
     # set the model as test mode
     model.eval()
     # for each tissue position
@@ -280,7 +287,7 @@ def update_heatmap(slaid, model, mpp_inve, li_ij_tissue, wh_inve, num_ij, n_proc
             slaid, model, im_heatmap_ij, mpp_inve, transphorm, li_ij_tissue,
             wh_inve, batch_size, use_gpu, is_debug, slide_id_ij_input_output_last_tissue)
     dummy = 0
-    return im_heatmap_ij
+    return im_heatmap_ij, im_count
 
 
 
@@ -607,13 +614,9 @@ def initialize(li_mpp_2_investigate, li_fn_slide, li_wh_inve, stride_factor,
     return li_model, li_li_im_discri_ij, li_xywh_inve, li_li_li_ij_tissue, li_li_num_ij
 
 ############################################################################################
-def normalize_heatmaps(li_fn_slide):
-    li_im_discriminative = []
-    # 각 슬라이드에 대해서
-    for iS, fn_slide in enumerate(li_fn_slide):
-        # discriminive flag map을 normalize한다.
-        li_im_discriminative[iS] = normalized_heatmap(li_li_im_discriminative[iS], li_im_count[iS])
-    return li_im_discriminative
+def normalize_heatmap(im_discri_ij, im_count):
+    t1 = np.divide(im_discri_ij.astype(float), im_count.astype(float))
+    return t1
 
 ############################################################################################
 def update_model(li_model, li_n_iter, li_mpp_inve, li_fn_slide, li_li_im_discri_ij, li_wh_inve,
@@ -724,24 +727,12 @@ def update_model(li_model, li_n_iter, li_mpp_inve, li_fn_slide, li_li_im_discri_
             for iS in range(i_from, i_to, i_interval):
                 fn_slide = li_fn_slide[iS]
                 slaid = OpenSlide(fn_slide)
-                li_li_im_discri_ij[iS][iR] = update_heatmap(
+                li_li_im_discri_ij[iS][iR], li_li_im_count[iS][iR] = update_heatmap(
                     slaid, li_model[iR], mpp_inve, li_li_li_ij_tissue[iS][iR], li_wh_inve[iR],
                     li_li_num_ij[iS][iR], n_proc, n_img_per_batch, li_transform[iR], use_gpu,
                     is_debug, slide_id_ij_input_output_last_tissue)
-
-            # 각 슬라이드에 대해
-            for iS, fn_slide in enumerate(li_fn_slide):
-                slaid = OpenSlide(fn_slide)
-                # 각 티슈 패치에 대해 평가를 하여 discriminive flag를 매긴다.
-                for tile_pos_l in li_li_tile_pos[iS][iR]:
-                    im_tile = get_sub_image(slide, tile_pos_l, mpp, mpp_standard)
-                    prob = test_model(model[iR], im_tile)
-                    li_li_im_discriminative[iS][iR], li_im_count[iS] = set_heat_map(im_discriminative, im_count, tile_pos_l,
-                                                                                    prob)
-        # 각 슬라이드에 대해
-        for iS, fn_slide in enumerate(li_fn_slide):
-            # discriminive flag map을 normalize한다.
-            li_im_discriminative[iS] = normalized_heatmap(li_li_im_discriminative[iS], li_im_count[iS])
+                li_li_im_discri_ij[iS][iR] = normalize_heatmap(
+                    li_li_im_discri_ij[iS][iR], li_li_im_count[iS][iR])
     return li_model
 ############################################################################################
 
@@ -785,25 +776,53 @@ def main():
 
 if __name__=='__main__':
 
-    score = Variable(torch.randn(10, 2))
-    target = Variable((torch.rand(10) > 0.5).long())
+
+    '''
+    im_a = np.random.rand(3, 2)
+    im_b= np.random.rand(3, 2)
+    t_a_over_b = np.divide(im_a, im_b)
+    t_b_over_a = np.divide(im_b, im_a)
+    print('im_a : ', im_a)
+    print('im_b : ', im_b)
+    print('t_a_over_b : ', t_a_over_b)
+    print('t_b_over_a : ', t_b_over_a)
+    dummy = 0
+
+    im_heatmap_ij = np.random.rand(3, 2)
+    print(im_heatmap_ij)
+    prob_max = im_heatmap_ij.max()
+    print(prob_max)
+    prob_min = im_heatmap_ij.min()
+    print(prob_min)
+    dummy = 0
+    t1 = torch.randn(10, 2)
+    print ('t1 : ', t1)
+    score = Variable(t1)
+    t2 = torch.rand(10) > 0.5
+    print ('t2 : ', t2)
+    t3 = t2.long()
+    print ('t3 : ', t3)
+    target = Variable(t3)
     lfn1 = torch.nn.CrossEntropyLoss()
     lfn2 = torch.nn.BCELoss()
     #print(lfn1(score, target), lfn2(torch.nn.functional.softmax(score)[:, 1], target.float()))
-    print(lfn1(score, target))
-    t1 = torch.nn.functional.softmax(score)
-    t2 = t1[:, 1]
-    t3 = target.float()
-    print(lfn2(t2, t3))
+    t4 = lfn1(score, target)
+    print('t4 : ', t4)
+
+    #t5 = torch.nn.functional.softmax(score)
+    t5 = F.softmax(score)
+    print ('t5 : ', t5)
+    t6 = t5[:, 1]
+    print ('t6 : ', t6)
+    t7 = target.float()
+    print ('t7 : ', t7)
+    t8 = lfn2(t6, t7)
+    print('t8 : ', t8)
 
     torch.manual_seed(42)
-    #trX, teX, trY, teY = load_mnist(onehot=False)
-    #trX, teX, trY, teY = load_mnist(onehot=True)
-
     trX, teX, trY, teY = load_mnist(5, 3, onehot=False)
     trX, teX, trY, teY = load_mnist(5, 3, onehot=True)
 
-    '''
     n_slide = 5
     if False:
         i_from, i_to, i_interval = n_slide - 1, -1, -1
